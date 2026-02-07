@@ -1,5 +1,5 @@
 from langchain_mcp_adapters.client import MultiServerMCPClient
-from langgraph.prebuilt import create_react_agent
+from langchain.agents import create_agent
 from langchain_ollama import ChatOllama
 import json
 from langchain_core.prompts import ChatPromptTemplate
@@ -9,15 +9,21 @@ from dotenv import load_dotenv
 import sys
 from pathlib import Path
 import asyncio
+from langchain_core.messages import AIMessage
 
 
 
-INSTRUCTION_PROMPT = """You are an orchestration agent. 
-Your job is ONLY to use the available MCP tools to answer the user.
-- Never invent or answer hypothetically.
-- If the information cannot be obtained via a tool or shows error due to insufficient parameters and required few parameters to fetch the data
-then ask the user to provide missing parameters.
-- You have to run the tools in any case
+INSTRUCTION_PROMPT = """You are a data-processing orchestration agent.
+
+STRICT RULES:
+1. You MUST call at least one MCP tool.
+2. Treat tool output as authoritative JSON data.
+3. You MUST explicitly parse and reason over the JSON fields.
+4. You MUST filter the data strictly based on the user request.
+5. You MUST discard any entries that do not match.
+6. You MUST NOT summarize or generalize.
+7. Your final answer MUST be derived only from the filtered JSON.
+8. If filtering cannot be done due to missing fields, ask the user.
 """
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -25,7 +31,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # env_path = Path('.env') 
 # load_dotenv(dotenv_path=env_path, override=True)
 LLM_endpoint = os.getenv("http://localhost:11434")
-MODEL_NAME='llama3.2:3b'
+MODEL_NAME='qwen3:4b'
 
 async def main(prompt: str):
     start_time=time.time()
@@ -54,14 +60,28 @@ async def main(prompt: str):
     # Create ReAct agent with tools
     system_prompt = ChatPromptTemplate.from_messages([
     ("system", INSTRUCTION_PROMPT),
+    ("system", "First reason over the JSON internally. Then produce the final filtered result."),
     ("user", prompt)
 ])
     constrained_model = model.with_config({"prompt": system_prompt})
-    agent = create_react_agent(constrained_model, tools)
+    agent = create_agent(constrained_model, tools)
 
     # Run with prompt
+    # Build a proper prompt with system instructions
+    full_prompt = f"""{INSTRUCTION_PROMPT}
+
+    User Query: {prompt}
+
+    IMPORTANT: 
+    1. Call the MCP tool to get job listings
+    2. Parse the JSON response
+    3. Filter jobs according to user prompt.
+    5. filter based on brief_description key.
+    6. Return ONLY the filtered results
+
+    """
     result = await agent.ainvoke(
-        {"messages": [{"role": "user", "content": prompt}]}
+        {"messages": [{"role": "user", "content": full_prompt}]}
     )
 
     try:
@@ -83,8 +103,14 @@ async def main(prompt: str):
     print("time_taken", end_time-start_time)
     return ans 
     
-prompt="""give me all job list"""
+prompt="""give me all node js job list"""
 ans=asyncio.run(main(prompt))
 # for key,val in ans.items():
 #     print(key,val)
-print(ans)
+# print(ans)
+# for msg in ans:
+#     print(msg)
+#     print("****************************")
+for msg in ans:
+    if isinstance(msg, AIMessage):
+        print(msg.content)
